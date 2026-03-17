@@ -73,7 +73,7 @@ class GridCell:
         self.frequency = None  # このセルに割り当てられた音階
         self.color = None  # このセルの色
         self.active = False  # 頭部が検出されているか
-        self.alpha = 100  # 透明度（100=半透明、255=不透明）
+        self.alpha = 50  # 透明度（50=半透明、255=不透明）
 
 class PersonDetectionApp:
     """人検出アプリケーションのメインクラス"""
@@ -171,15 +171,15 @@ class PersonDetectionApp:
                     if not self.cell_triggered[i]:
                         self.piano.play(cell.frequency)  # このセルの音階で演奏
                         self.cell_triggered[i] = True  # トリガー状態にする
-                        cell.alpha = 255  # 透明度を最大（不透明）にする
+                        cell.alpha = 150  # 透明度を上げる（半透明を維持）
                     break
             
             # 頭部が離れた場合
             if not cell.active:
                 self.cell_triggered[i] = False  # トリガー解除
                 # 透明度を徐々に元に戻す（フェードアウト）
-                if cell.alpha > 100:
-                    cell.alpha = max(100, cell.alpha - 10)
+                if cell.alpha > 50:
+                    cell.alpha = max(50, cell.alpha - 10)
     
     def run(self):
         """メインループ"""
