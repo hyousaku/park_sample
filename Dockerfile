@@ -21,7 +21,7 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Force rebuild - mirroring update
+# Force rebuild - launcher update
 COPY . .
 
-CMD ["python", "main.py"]
+CMD ["python", "launcher.py"]
