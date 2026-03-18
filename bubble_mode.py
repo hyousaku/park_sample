@@ -158,7 +158,8 @@ class BubbleModeApp:
         self.model = YOLO('yolov8n-pose.pt')
         
         # WEBカメラの初期化
-        self.cap = cv2.VideoCapture(0)
+        camera_index = int(os.environ.get("CAMERA_INDEX", 1))
+        self.cap = cv2.VideoCapture(camera_index, cv2.CAP_DSHOW)
         if not self.cap.isOpened():
             print("Error: Could not open camera")
             raise RuntimeError("Failed to open camera device")
