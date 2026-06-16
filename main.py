@@ -18,6 +18,9 @@ GRID_ROWS = 9   # 画面をたてに9マスに分ける
 CELL_WIDTH = SCREEN_WIDTH // GRID_COLS    # 1マスの横の広さ（自動で計算）
 CELL_HEIGHT = SCREEN_HEIGHT // GRID_ROWS  # 1マスのたての広さ（自動で計算）
 SOUND_CHANGE_INTERVAL = 12  # 何秒ごとに音の配置を変えるか（12秒）
+YOLO_SKIP_FRAMES = 3   # 何フレームに1回AIを動かすか（3=1秒に10回）
+YOLO_INPUT_WIDTH = 640  # AIに渡す映像の横幅（小さいほど速い）
+YOLO_INPUT_HEIGHT = 360  # AIに渡す映像のたての幅（小さいほど速い）
 
 # ドレミの音の高さ（Hz＝1秒間に何回ふるえるか）を並べたリスト
 # これは「Dペンタトニック」という5音のスケールだよ
@@ -76,6 +79,13 @@ class GridCell:
         self.color = None      # このマスの色
         self.active = False    # 今このマスに頭があるか（True=ある、False=ない）
         self.alpha = 50        # マスの色の濃さ（50=うすい、255=こい）
+        # 毎フレーム作り直さないように Surface をあらかじめ用意しておく
+        self.surface = pygame.Surface((CELL_WIDTH, CELL_HEIGHT), pygame.SRCALPHA)
+
+    def draw(self, screen, flip_x):
+        """マスを画面に描く（flip_x=True なら左右反転した位置に描く）"""
+        self.surface.fill((*self.color, int(self.alpha)))
+        screen.blit(self.surface, (flip_x, self.rect.y))
 
 class PersonDetectionApp:
     """このアプリ全体を動かすクラス（設計図）だよ"""
@@ -93,8 +103,10 @@ class PersonDetectionApp:
         if not self.cap.isOpened():
             print("Error: Could not open camera")
             raise RuntimeError("Failed to open camera device")
-        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, SCREEN_WIDTH)
-        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, SCREEN_HEIGHT)
+        # カメラはカメラが対応している解像度で取得し、あとで拡大する（バッファが小さく速い）
+        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+        self.cap.set(cv2.CAP_PROP_FPS, 30)  # フレームレートを明示的に指定
         
         # ピアノの音の準備をする
         self.piano = PianoSound()
@@ -109,6 +121,13 @@ class PersonDetectionApp:
         self.cell_triggered = {}  # どのマスで音が鳴っているかを覚えておく辞書
         self.assign_sounds_to_grid()
         self.last_sound_change = time.time()  # 最後に音の配置を変えた時刻を記録
+        
+        # フレームスキップ用カウンター（毎フレームAIを動かさないようにする）
+        self.frame_count = 0
+        self.last_head_positions = []  # 前回のAI結果を使い回す
+        
+        # 映像表示用のSurfaceをあらかじめ用意（毎フレーム作り直さない）
+        self.frame_surface = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT))
         
         # 画面を1秒間に何回更新するか管理する時計
         self.clock = pygame.time.Clock()
@@ -136,7 +155,13 @@ class PersonDetectionApp:
     
     def detect_persons(self, frame):
         """AIを使ってカメラ映像から人の頭の位置を探す"""
-        results = self.model(frame, verbose=False)  # AIに画像を渡して人を探してもらう
+        # AIには小さい画像を渡す（速さ優先）。座標は後で画面サイズに拡大する
+        small = cv2.resize(frame, (YOLO_INPUT_WIDTH, YOLO_INPUT_HEIGHT))
+        results = self.model(small, verbose=False)  # 小さい画像でAI推論
+        
+        # 小さい画像→画面サイズへの拡大比率
+        scale_x = SCREEN_WIDTH / YOLO_INPUT_WIDTH
+        scale_y = SCREEN_HEIGHT / YOLO_INPUT_HEIGHT
         
         head_positions = []  # 見つかった頭の場所を入れるリスト
         if len(results) > 0 and results[0].keypoints is not None:
@@ -146,11 +171,14 @@ class PersonDetectionApp:
                 if len(kp_data) > 0 and len(kp_data[0]) > 0:
                     nose = kp_data[0][0]  # 鼻の位置を頭の中心として使う
                     if nose[0] > 0 and nose[1] > 0:  # 鼻が画面の中に映っているか確認
+                        # 小さい画像の座標を画面サイズに戻す
+                        nx = nose[0] * scale_x
+                        ny = nose[1] * scale_y
                         head_size = 40  # 頭の大きさ（鼻を中心に±40ピクセル＝80×80の四角）
-                        x1 = int(nose[0] - head_size)  # 頭の四角の左端
-                        y1 = int(nose[1] - head_size)  # 頭の四角の上端
-                        x2 = int(nose[0] + head_size)  # 頭の四角の右端
-                        y2 = int(nose[1] + head_size)  # 頭の四角の下端
+                        x1 = int(nx - head_size)
+                        y1 = int(ny - head_size)
+                        x2 = int(nx + head_size)
+                        y2 = int(ny + head_size)
                         head_positions.append((x1, y1, x2, y2))
         
         return head_positions
@@ -199,14 +227,17 @@ class PersonDetectionApp:
             if not ret:
                 continue  # うまく取れなかった場合はやり直す
             
-            # 映像をちょうど画面と同じ大きさに調整する
-            frame = cv2.resize(frame, (SCREEN_WIDTH, SCREEN_HEIGHT))
+            # 映像を画面サイズに拡大（表示用）
+            frame_full = cv2.resize(frame, (SCREEN_WIDTH, SCREEN_HEIGHT))
             
-            # AIを使って映像の中の人の頭を探す
-            head_positions = self.detect_persons(frame)
+            # AIはフレームスキップして実行（毎フレーム動かさず負荷を下げる）
+            self.frame_count += 1
+            if self.frame_count % YOLO_SKIP_FRAMES == 0:
+                # detect_persons 内で YOLO_INPUT サイズに縮小してから推論する
+                self.last_head_positions = self.detect_persons(frame_full)
             
             # 頭がどのマスに入っているか調べて音を鳴らす
-            self.check_grid_collision(head_positions)
+            self.check_grid_collision(self.last_head_positions)
             
             # 12秒経ったら音の配置をシャッフルする
             current_time = time.time()
@@ -215,15 +246,19 @@ class PersonDetectionApp:
                 self.last_sound_change = current_time
             
             # カメラ映像をpygameが使える形に変換して画面に表示する
-            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            self.screen.blit(pygame.surfarray.make_surface(np.rot90(frame_rgb)), (0, 0))
+            # rot90の代わりにtransposeで回転（メモリコピーが少なく速い）
+            frame_rgb = cv2.cvtColor(frame_full, cv2.COLOR_BGR2RGB)
+            frame_transposed = frame_rgb.transpose(1, 0, 2)  # HWC → WHC（rot90相当）
+            pygame.surfarray.blit_array(self.frame_surface, frame_transposed)
+            # 左右反転して鏡のように表示
+            flipped = pygame.transform.flip(self.frame_surface, True, False)
+            self.screen.blit(flipped, (0, 0))
             
             # 頭が入っているマスに色をつけて表示する（鏡のように左右反転）
             for cell in self.grid_cells:
                 if cell.active:
-                    cell_surface = pygame.Surface((cell.rect.width, cell.rect.height), pygame.SRCALPHA)
-                    cell_surface.fill((*cell.color, int(cell.alpha)))
-                    self.screen.blit(cell_surface, (SCREEN_WIDTH - cell.rect.x - cell.rect.width, cell.rect.y))
+                    flip_x = SCREEN_WIDTH - cell.rect.x - cell.rect.width
+                    cell.draw(self.screen, flip_x)
             
             # 描いた内容を実際の画面に反映させる
             pygame.display.flip()

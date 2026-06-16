@@ -26,6 +26,11 @@ CIRCLE_ALPHA = 120       # 円のすき通り具合（0=完全に透明、255=�
 # 頭との当たり判定の広さ
 HEAD_HIT_RADIUS = 100  # 頭の中心からこのピクセル数以内に円が来たら当たりとみなす
 
+# AI推論の設定
+YOLO_SKIP_FRAMES = 3    # 何フレームに1回AIを動かすか（3=1秒に10回）
+YOLO_INPUT_WIDTH = 640  # AIに渡す映像の横幅（小さいほど速い）
+YOLO_INPUT_HEIGHT = 360  # AIに渡す映像のたての幅（小さいほど速い）
+
 # 打楽器音の音の高さ（Hz＝1秒間に何回ふるえるか）
 PERCUSSION_FREQUENCIES = [
     200, 250, 300, 350, 400, 450, 500, 550  # 低めの音でドラムっぽく聞こえる
@@ -166,8 +171,10 @@ class BubbleModeApp:
         if not self.cap.isOpened():
             print("Error: Could not open camera")
             raise RuntimeError("Failed to open camera device")
-        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, SCREEN_WIDTH)
-        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, SCREEN_HEIGHT)
+        # カメラはカメラが対応している解像度で取得し、あとで拡大する（バッファが小さく速い）
+        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+        self.cap.set(cv2.CAP_PROP_FPS, 30)  # フレームレートを明示的に指定
         
         # 打楽器の音の準備をする
         self.percussion = PercussionSound()
@@ -177,13 +184,26 @@ class BubbleModeApp:
         for _ in range(CIRCLE_COUNT):
             self.circles.append(FloatingCircle())
         
+        # フレームスキップ用カウンター（毎フレームAIを動かさないようにする）
+        self.frame_count = 0
+        self.last_head_positions = []  # 前回のAI結果を使い回す
+        
+        # 映像表示用のSurfaceをあらかじめ用意（毎フレーム作り直さない）
+        self.frame_surface = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT))
+        
         # 画面を1秒間に何回更新するか管理する時計
         self.clock = pygame.time.Clock()
         self.running = True  # Trueのあいだアプリが動き続ける
     
     def detect_head(self, frame):
         """AIを使ってカメラ映像から人の頭の場所を探すよ"""
-        results = self.model(frame, verbose=False)  # AIに画像を渡して人を探してもらう
+        # AIには小さい画像を渡す（速さ優先）。座標は後で画面サイズに拡大する
+        small = cv2.resize(frame, (YOLO_INPUT_WIDTH, YOLO_INPUT_HEIGHT))
+        results = self.model(small, verbose=False)  # 小さい画像でAI推論
+        
+        # 小さい画像→画面サイズへの拡大比率
+        scale_x = SCREEN_WIDTH / YOLO_INPUT_WIDTH
+        scale_y = SCREEN_HEIGHT / YOLO_INPUT_HEIGHT
         
         head_positions = []  # 見つかった頭の場所（x, y）を入れるリスト
         if len(results) > 0 and results[0].keypoints is not None:
@@ -193,7 +213,8 @@ class BubbleModeApp:
                 if len(kp_data) > 0 and len(kp_data[0]) > 0:
                     nose = kp_data[0][0]  # 鼻の位置を頭の中心として使う
                     if nose[0] > 0 and nose[1] > 0:  # 鼻が画面の中に映っているか確認
-                        head_positions.append((int(nose[0]), int(nose[1])))
+                        # 小さい画像の座標を画面サイズに戻す
+                        head_positions.append((int(nose[0] * scale_x), int(nose[1] * scale_y)))
         
         return head_positions
     
@@ -231,14 +252,17 @@ class BubbleModeApp:
             if not ret:
                 continue  # うまく取れなかった場合はやり直す
             
-            # 映像をちょうど画面と同じ大きさに調整する
+            # 映像を画面サイズに拡大（表示用）
             frame = cv2.resize(frame, (SCREEN_WIDTH, SCREEN_HEIGHT))
             
-            # AIを使って映像の中の人の頭を探す
-            head_positions = self.detect_head(frame)
+            # AIはフレームスキップして実行（毎フレーム動かさず負荷を下げる）
+            self.frame_count += 1
+            if self.frame_count % YOLO_SKIP_FRAMES == 0:
+                # detect_head 内で YOLO_INPUT サイズに縮小してから推論する
+                self.last_head_positions = self.detect_head(frame)
             
             # 頭が円に当たっているか調べる
-            self.check_collisions(head_positions)
+            self.check_collisions(self.last_head_positions)
             
             # 消えた円を取り除いて新しい円を補充する
             self.manage_circles()
@@ -248,12 +272,14 @@ class BubbleModeApp:
                 circle.update()
             
             # カメラ映像を鏡のように左右反転して表示する
+            # rot90の代わりにtransposeで回転（メモリコピーが少なく速い）
             frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            frame_surface = pygame.surfarray.make_surface(np.rot90(frame_rgb))
-            frame_surface = pygame.transform.flip(frame_surface, True, False)  # 左右反転
+            frame_transposed = frame_rgb.transpose(1, 0, 2)  # HWC → WHC（rot90相当）
+            pygame.surfarray.blit_array(self.frame_surface, frame_transposed)
+            flipped = pygame.transform.flip(self.frame_surface, True, False)  # 左右反転
             
             # 反転した映像を背景として画面に描く
-            self.screen.blit(frame_surface, (0, 0))
+            self.screen.blit(flipped, (0, 0))
             
             # 映像の上に円を重ねて描く
             for circle in self.circles:
