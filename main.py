@@ -1,92 +1,94 @@
-# 必要なライブラリのインポート
+# このプログラムで使う「道具箱」を読み込んでいるよ
 import os
-os.environ['TORCH_FORCE_WEIGHTS_ONLY_LOAD'] = '0'  # PyTorchの警告を回避
+os.environ['TORCH_FORCE_WEIGHTS_ONLY_LOAD'] = '0'  # AIが警告を出さないようにするおまじない
 
-import cv2  # OpenCV - カメラ映像処理用
-import pygame  # 画面表示と音声再生用
-import numpy as np  # 数値計算用
-import torch  # PyTorch - YOLOモデル用
-from ultralytics import YOLO  # YOLOv8モデル
-import random  # ランダム音階配置用
-import time  # 時間管理用
+import cv2  # カメラの映像を使うための道具
+import pygame  # 画面に絵を描いたり、音を鳴らしたりする道具
+import numpy as np  # 数字をたくさん計算するための道具
+import torch  # AIを動かすための道具
+from ultralytics import YOLO  # 人を見つけるAI（YOLO）を使うための道具
+import random  # ランダムに何かを選ぶときに使う道具
+import time  # 時間を計るときに使う道具
 
-# 画面設定
-SCREEN_WIDTH = 1920  # Full HD 幅
-SCREEN_HEIGHT = 1080  # Full HD 高さ
-GRID_COLS = 16  # グリッド列数（横16分割）
-GRID_ROWS = 9  # グリッド行数（縦9分割）
-CELL_WIDTH = SCREEN_WIDTH // GRID_COLS  # 各セルの幅
-CELL_HEIGHT = SCREEN_HEIGHT // GRID_ROWS  # 各セルの高さ
-SOUND_CHANGE_INTERVAL = 12  # 音階配置変更間隔（秒）
+# 画面の大きさを決めるよ（単位はピクセル＝画面の点の数）
+SCREEN_WIDTH = 1920   # 画面の横の広さ
+SCREEN_HEIGHT = 1080  # 画面のたての広さ
+GRID_COLS = 16  # 画面を横に16マスに分ける
+GRID_ROWS = 9   # 画面をたてに9マスに分ける
+CELL_WIDTH = SCREEN_WIDTH // GRID_COLS    # 1マスの横の広さ（自動で計算）
+CELL_HEIGHT = SCREEN_HEIGHT // GRID_ROWS  # 1マスのたての広さ（自動で計算）
+SOUND_CHANGE_INTERVAL = 12  # 何秒ごとに音の配置を変えるか（12秒）
 
-# Dペンタトニックスケールの周波数（Hz）
+# ドレミの音の高さ（Hz＝1秒間に何回ふるえるか）を並べたリスト
+# これは「Dペンタトニック」という5音のスケールだよ
 D_PENTATONIC = [293.66, 329.63, 369.99, 440.00, 493.88, 587.33, 659.25, 739.99]
 
 class PianoSound:
-    """ピアノ音を生成・再生するクラス"""
+    """ピアノの音を作って鳴らすクラス（設計図）だよ"""
     def __init__(self):
-        # 音声ミキサーの初期化
+        # 音を鳴らす準備をする（スピーカーの設定）
         pygame.mixer.init(frequency=22050, size=-16, channels=2, buffer=512)
-        self.sounds = {}  # 周波数ごとの音声データを保存
-        # Dペンタトニックの各音を事前生成
+        self.sounds = {}  # 音の高さごとに音データを保存しておく箱
+        # あらかじめ全部の音を作っておく（鳴らすときに速くできるように）
         for freq in D_PENTATONIC:
             self.sounds[freq] = self.generate_piano_tone(freq, 0.3)
     
     def generate_piano_tone(self, frequency, duration):
-        """ピアノ音を生成する"""
-        sample_rate = 22050  # サンプリングレート
-        n_samples = int(sample_rate * duration)  # サンプル数
+        """ピアノの音を数学で作るよ（波を合わせて音を作る）"""
+        sample_rate = 22050  # 1秒間に何個の音のデータを作るか
+        n_samples = int(sample_rate * duration)  # 必要なデータの個数
         
-        # 時間軸の生成
+        # 0から終わりまでの時間を細かく刻んだリストを作る
         t = np.linspace(0, duration, n_samples, False)
         
-        # 基音と倍音を合成してピアノらしい音色を作る
-        wave = np.sin(2 * np.pi * frequency * t)  # 基音
-        wave += 0.5 * np.sin(2 * np.pi * frequency * 2 * t)  # 2倍音
-        wave += 0.25 * np.sin(2 * np.pi * frequency * 3 * t)  # 3倍音
+        # 波を重ね合わせてピアノっぽい音色を作る
+        # （ギターの弦が震えるのと同じ仕組みで、倍の速さの波も混ざっているよ）
+        wave = np.sin(2 * np.pi * frequency * t)        # 基本の波（1番目）
+        wave += 0.5 * np.sin(2 * np.pi * frequency * 2 * t)   # 2倍の速さの波（少し混ぜる）
+        wave += 0.25 * np.sin(2 * np.pi * frequency * 3 * t)  # 3倍の速さの波（もう少し混ぜる）
         
-        # エンベロープ（減衰）を適用
-        envelope = np.exp(-3 * t / duration)
-        wave = wave * envelope
+        # ピアノみたいに最初が大きくて、だんだん小さくなるようにする
+        envelope = np.exp(-3 * t / duration)  # 時間が経つほど小さくなる数を作る
+        wave = wave * envelope  # 波に掛けて音を小さくしていく
         
-        # 音量調整と整数化
+        # 音が大きすぎないように調整して、コンピュータが扱える整数に変換する
         wave = wave * 0.3
         wave = np.int16(wave * 32767)
         
-        # ステレオ音声に変換
+        # 左右のスピーカー（ステレオ）で同じ音が出るようにする
         stereo_wave = np.zeros((n_samples, 2), dtype=np.int16)
-        stereo_wave[:, 0] = wave  # 左チャンネル
-        stereo_wave[:, 1] = wave  # 右チャンネル
+        stereo_wave[:, 0] = wave  # 左のスピーカー用
+        stereo_wave[:, 1] = wave  # 右のスピーカー用
         
         sound = pygame.sndarray.make_sound(stereo_wave)
         return sound
     
     def play(self, frequency):
-        """指定周波数の音を再生"""
+        """指定した高さの音を鳴らすよ"""
         if frequency in self.sounds:
             self.sounds[frequency].play()
 
 class GridCell:
-    """グリッドセル（16x9の各マス）を表すクラス"""
+    """画面を分けた1つ1つのマスを表すクラス（設計図）だよ"""
     def __init__(self, col, row):
-        self.rect = pygame.Rect(col * CELL_WIDTH, row * CELL_HEIGHT, CELL_WIDTH, CELL_HEIGHT)  # セルの矩形領域
-        self.frequency = None  # このセルに割り当てられた音階
-        self.color = None  # このセルの色
-        self.active = False  # 頭部が検出されているか
-        self.alpha = 50  # 透明度（50=半透明、255=不透明）
+        self.rect = pygame.Rect(col * CELL_WIDTH, row * CELL_HEIGHT, CELL_WIDTH, CELL_HEIGHT)  # このマスの場所と大きさ
+        self.frequency = None  # このマスに割り当てる音の高さ
+        self.color = None      # このマスの色
+        self.active = False    # 今このマスに頭があるか（True=ある、False=ない）
+        self.alpha = 50        # マスの色の濃さ（50=うすい、255=こい）
 
 class PersonDetectionApp:
-    """人検出アプリケーションのメインクラス"""
+    """このアプリ全体を動かすクラス（設計図）だよ"""
     def __init__(self):
-        # Pygameの初期化
+        # 画面を表示する準備をする
         pygame.init()
         self.screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
         pygame.display.set_caption("Person Detection with YOLO")
         
-        # YOLOv8-poseモデルの読み込み（頭部検出用）
+        # 人を見つけるAI（YOLO）を読み込む
         self.model = YOLO('yolov8n-pose.pt')
         
-        # WEBカメラの初期化
+        # ウェブカメラを使えるように準備する
         self.cap = cv2.VideoCapture(0)
         if not self.cap.isOpened():
             print("Error: Could not open camera")
@@ -94,147 +96,147 @@ class PersonDetectionApp:
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, SCREEN_WIDTH)
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, SCREEN_HEIGHT)
         
-        # ピアノ音の初期化
+        # ピアノの音の準備をする
         self.piano = PianoSound()
         
-        # 16x9のグリッドセルを生成（合計144セル）
+        # 画面を16×9＝144マスに分けて、全部のマスを作る
         self.grid_cells = []
         for row in range(GRID_ROWS):
             for col in range(GRID_COLS):
                 self.grid_cells.append(GridCell(col, row))
         
-        # 各セルの音階をランダムに割り当て
-        self.cell_triggered = {}  # 各セルの音が鳴っているかを記録
+        # 各マスに音の高さをランダムに割り当てる
+        self.cell_triggered = {}  # どのマスで音が鳴っているかを覚えておく辞書
         self.assign_sounds_to_grid()
-        self.last_sound_change = time.time()  # 最後に音階を変更した時刻
+        self.last_sound_change = time.time()  # 最後に音の配置を変えた時刻を記録
         
-        # フレームレート管理用
+        # 画面を1秒間に何回更新するか管理する時計
         self.clock = pygame.time.Clock()
-        self.running = True
+        self.running = True  # Trueのあいだアプリが動き続ける
     
     def assign_sounds_to_grid(self):
-        """各グリッドセルにランダムな音階と色を割り当てる（12秒ごとに実行）"""
-        self.cell_triggered = {}  # トリガー状態をリセット
+        """全マスに音の高さと色をランダムに割り当てる（12秒ごとに呼ばれる）"""
+        self.cell_triggered = {}  # 音が鳴っているかの記録をリセットする
         
-        # 6色のカラーパレット
+        # 使う6色を決める（赤・緑・青・黄・ピンク・水色）
         colors = [
-            (255, 100, 100),  # 赤系
-            (100, 255, 100),  # 緑系
-            (100, 100, 255),  # 青系
-            (255, 255, 100),  # 黄系
-            (255, 100, 255),  # マゼンタ系
-            (100, 255, 255),  # シアン系
+            (255, 100, 100),  # 赤っぽい色
+            (100, 255, 100),  # 緑っぽい色
+            (100, 100, 255),  # 青っぽい色
+            (255, 255, 100),  # 黄色っぽい色
+            (255, 100, 255),  # ピンクっぽい色
+            (100, 255, 255),  # 水色っぽい色
         ]
         
-        # 各セルに音階と色を割り当て
+        # 全マスに1つずつ音と色を割り当てる
         for i, cell in enumerate(self.grid_cells):
-            cell.frequency = random.choice(D_PENTATONIC)  # Dペンタトニックからランダムに選択
-            cell.color = colors[i % len(colors)]  # 色を順番に割り当て
-            self.cell_triggered[i] = False  # 音が鳴っていない状態に初期化
+            cell.frequency = random.choice(D_PENTATONIC)  # 音の高さをランダムに選ぶ
+            cell.color = colors[i % len(colors)]  # 色を順番に割り当てる（6色くり返し）
+            self.cell_triggered[i] = False  # 最初は音が鳴っていない状態にする
     
     def detect_persons(self, frame):
-        """YOLOv8-poseで人の頭部位置を検出"""
-        results = self.model(frame, verbose=False)  # YOLOで推論実行
+        """AIを使ってカメラ映像から人の頭の位置を探す"""
+        results = self.model(frame, verbose=False)  # AIに画像を渡して人を探してもらう
         
-        head_positions = []  # 検出された頭部の位置リスト
+        head_positions = []  # 見つかった頭の場所を入れるリスト
         if len(results) > 0 and results[0].keypoints is not None:
-            keypoints = results[0].keypoints  # キーポイント（骨格）データ取得
+            keypoints = results[0].keypoints  # AIが見つけた体のポイント（骨格）を取り出す
             for person_kp in keypoints:
-                kp_data = person_kp.xy.cpu().numpy()  # キーポイント座標を取得
+                kp_data = person_kp.xy.cpu().numpy()  # 各ポイントの座標（x, y）を取り出す
                 if len(kp_data) > 0 and len(kp_data[0]) > 0:
-                    nose = kp_data[0][0]  # 鼻の位置（頭部の中心として使用）
-                    if nose[0] > 0 and nose[1] > 0:  # 有効な座標か確認
-                        head_size = 40  # 頭部領域のサイズ（80x80ピクセル）
-                        x1 = int(nose[0] - head_size)
-                        y1 = int(nose[1] - head_size)
-                        x2 = int(nose[0] + head_size)
-                        y2 = int(nose[1] + head_size)
+                    nose = kp_data[0][0]  # 鼻の位置を頭の中心として使う
+                    if nose[0] > 0 and nose[1] > 0:  # 鼻が画面の中に映っているか確認
+                        head_size = 40  # 頭の大きさ（鼻を中心に±40ピクセル＝80×80の四角）
+                        x1 = int(nose[0] - head_size)  # 頭の四角の左端
+                        y1 = int(nose[1] - head_size)  # 頭の四角の上端
+                        x2 = int(nose[0] + head_size)  # 頭の四角の右端
+                        y2 = int(nose[1] + head_size)  # 頭の四角の下端
                         head_positions.append((x1, y1, x2, y2))
         
         return head_positions
     
     def check_grid_collision(self, head_positions):
-        """頭部とグリッドセルの衝突判定を行い、音を鳴らす"""
+        """頭がどのマスに入っているか調べて、入っていたら音を鳴らす"""
         for i, cell in enumerate(self.grid_cells):
-            cell.active = False  # まず非アクティブ状態にリセット
+            cell.active = False  # いったん「頭がいない」状態にリセット
             
-            # 各検出された頭部について
+            # 検出された頭1つ1つについて調べる
             for (x1, y1, x2, y2) in head_positions:
-                head_center_x = (x1 + x2) // 2  # 頭部の中心X座標
-                head_center_y = (y1 + y2) // 2  # 頭部の中心Y座標
+                head_center_x = (x1 + x2) // 2  # 頭の真ん中のX座標
+                head_center_y = (y1 + y2) // 2  # 頭の真ん中のY座標
                 
-                # 頭部の中心がこのセル内にあるか判定
+                # 頭の真ん中がこのマスの中に入っているか調べる
                 if cell.rect.collidepoint(head_center_x, head_center_y):
-                    cell.active = True  # セルをアクティブ化
+                    cell.active = True  # 「頭がいる！」とマークする
                     
-                    # まだ音が鳴っていなければ音を鳴らす
+                    # まだ音が鳴っていないなら音を鳴らす（入った瞬間だけ鳴らす）
                     if not self.cell_triggered[i]:
-                        self.piano.play(cell.frequency)  # このセルの音階で演奏
-                        self.cell_triggered[i] = True  # トリガー状態にする
-                        cell.alpha = 150  # 透明度を上げる（半透明を維持）
-                    break
+                        self.piano.play(cell.frequency)  # このマスの音を鳴らす
+                        self.cell_triggered[i] = True  # 「もう音を鳴らした」と記録する
+                        cell.alpha = 150  # マスの色を少し濃くする
+                    break  # 1つの頭がマスに入っていれば十分なので次の頭は調べない
             
-            # 頭部が離れた場合
+            # 頭がマスから出た場合
             if not cell.active:
-                self.cell_triggered[i] = False  # トリガー解除
-                # 透明度を徐々に元に戻す（フェードアウト）
+                self.cell_triggered[i] = False  # 「まだ音を鳴らしていない」状態に戻す
+                # マスの色をゆっくり薄くしていく（フェードアウト）
                 if cell.alpha > 50:
                     cell.alpha = max(50, cell.alpha - 10)
     
     def run(self):
-        """メインループ"""
+        """アプリのメインループ（ずっとくり返す処理）"""
         while self.running:
-            # イベント処理（ウィンドウ閉じる、ESCキーで終了）
+            # キーボードやウィンドウの×ボタンなどの操作を受け取る
             for event in pygame.event.get():
-                if event.type == pygame.QUIT:
+                if event.type == pygame.QUIT:      # ウィンドウの×を押したら終了
                     self.running = False
                 elif event.type == pygame.KEYDOWN:
-                    if event.key == pygame.K_ESCAPE:
+                    if event.key == pygame.K_ESCAPE:  # ESCキーを押したら終了
                         self.running = False
             
-            # カメラからフレームを取得
+            # カメラから今の映像を1枚取り出す
             ret, frame = self.cap.read()
             if not ret:
-                continue
+                continue  # うまく取れなかった場合はやり直す
             
-            # フレームをFull HDにリサイズ
+            # 映像をちょうど画面と同じ大きさに調整する
             frame = cv2.resize(frame, (SCREEN_WIDTH, SCREEN_HEIGHT))
             
-            # 人の頭部を検出
+            # AIを使って映像の中の人の頭を探す
             head_positions = self.detect_persons(frame)
             
-            # 頭部とグリッドの衝突判定・音再生
+            # 頭がどのマスに入っているか調べて音を鳴らす
             self.check_grid_collision(head_positions)
             
-            # 12秒ごとに音階配置を変更
+            # 12秒経ったら音の配置をシャッフルする
             current_time = time.time()
             if current_time - self.last_sound_change >= SOUND_CHANGE_INTERVAL:
                 self.assign_sounds_to_grid()
                 self.last_sound_change = current_time
             
-            # カメラ映像をpygame用に変換して描画
+            # カメラ映像をpygameが使える形に変換して画面に表示する
             frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             self.screen.blit(pygame.surfarray.make_surface(np.rot90(frame_rgb)), (0, 0))
             
-            # アクティブなセルに半透明カラーを描画（左右反転）
+            # 頭が入っているマスに色をつけて表示する（鏡のように左右反転）
             for cell in self.grid_cells:
                 if cell.active:
                     cell_surface = pygame.Surface((cell.rect.width, cell.rect.height), pygame.SRCALPHA)
                     cell_surface.fill((*cell.color, int(cell.alpha)))
                     self.screen.blit(cell_surface, (SCREEN_WIDTH - cell.rect.x - cell.rect.width, cell.rect.y))
             
-            # 画面更新
+            # 描いた内容を実際の画面に反映させる
             pygame.display.flip()
-            self.clock.tick(30)  # 30FPS
+            self.clock.tick(30)  # 1秒間に30回くり返す（30FPS）
         
         self.cleanup()
     
     def cleanup(self):
-        """終了処理"""
-        self.cap.release()  # カメラを解放
-        pygame.quit()  # Pygameを終了
+        """アプリを終了するときの後片付け"""
+        self.cap.release()  # カメラを使い終わったので解放する
+        pygame.quit()  # pygameを終了する
 
-# メインエントリーポイント
+# このファイルを直接実行したときだけ動くようにする
 if __name__ == "__main__":
     app = PersonDetectionApp()
     app.run()

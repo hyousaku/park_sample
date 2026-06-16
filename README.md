@@ -192,6 +192,9 @@ chmod +x run.sh
 `run.sh`を使わずに手動で実行する場合：
 
 ```bash
+# X11アクセスを許可
+xhost +local:
+
 # イメージをビルド
 podman build -t person-detection-app .
 
@@ -200,11 +203,18 @@ podman run --rm -it \
     --name person-detection-container \
     --device=/dev/video0:/dev/video0 \
     --device=/dev/video1:/dev/video1 \
+    --device=/dev/snd:/dev/snd \
     -e DISPLAY=$DISPLAY \
+    -e XDG_RUNTIME_DIR=/run/user/$(id -u) \
+    -e PULSE_SERVER=unix:/run/user/$(id -u)/pulse/native \
     -v /tmp/.X11-unix:/tmp/.X11-unix:rw \
+    -v /run/user/$(id -u):/run/user/$(id -u):rw \
     --security-opt label=disable \
     --privileged \
     person-detection-app
+
+# 終了後にX11認証を元に戻す
+xhost -local:
 ```
 
 ## トラブルシューティング
@@ -255,20 +265,13 @@ podman run --rm -it \
 
 **解決方法**:
 
-PulseAudioを使用している場合、音声デバイスをマウント：
+`run.sh` には音声デバイスのマウントが含まれています。`run.sh` を使って起動してください：
 
 ```bash
-podman run --rm -it \
-    --device=/dev/video0:/dev/video0 \
-    --device=/dev/video1:/dev/video1 \
-    -e DISPLAY=$DISPLAY \
-    -v /tmp/.X11-unix:/tmp/.X11-unix:rw \
-    -v /run/user/$(id -u)/pulse:/run/user/1000/pulse \
-    -e PULSE_SERVER=unix:/run/user/1000/pulse/native \
-    --security-opt label=disable \
-    --privileged \
-    person-detection-app
+bash run.sh
 ```
+
+手動で実行する場合は `--device=/dev/snd:/dev/snd` と `-e PULSE_SERVER` が含まれているか確認してください（上記「手動実行方法」参照）。
 
 ### アプリケーションがすぐに終了する
 
@@ -299,7 +302,6 @@ podman run --rm -it \
 - **pygame**: 2.5.2 - 画面表示と音声再生
 - **numpy**: 1.26.4 - 数値計算
 - **torch**: 2.5.1 - PyTorch（YOLOのバックエンド）
-- **torchvision**: 0.20.1 - PyTorchビジョンライブラリ
 
 ### システムライブラリ
 
@@ -319,5 +321,7 @@ park_sample/
 ├── Dockerfile       # コンテナイメージ定義
 ├── requirements.txt # Python依存関係
 ├── run.sh          # 起動スクリプト
-└── README.md       # このファイル
+├── ALGORITHM.md         # グリッドモード アルゴリズム解説
+├── ALGORITHM_BUBBLE.md  # バブルモード アルゴリズム解説
+└── README.md            # このファイル
 ```
